@@ -1,453 +1,488 @@
-use crate::callbacks::CallbackManager;
+#![allow(unused_attributes)]
+
 use crate::config::Config;
+use crate::display_names;
 use crate::errors::Result;
-use crate::remote::{Remote, RemoteConfig, RemoteEvent, RemoteHandle, RemoteState};
-use rustyline::error::ReadlineError;
-use rustyline::DefaultEditor;
+use crate::remote::{Remote, RemoteCommand, RemoteConfig, RemoteEvent, RemoteState};
+use reedline::{FileBackedHistory, Prompt, PromptEditMode, PromptHistorySearch, Reedline, Signal};
+use std::borrow::Cow;
+use std::bstr::ByteStr;
 use std::collections::HashMap;
-use std::io::{self, IsTerminal};
+use std::env;
+use std::fmt::Write;
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use tokio::select;
 use tokio::sync::mpsc;
+use tracing::{debug, error};
+
+fn get_decimal_width(n: usize) -> usize {
+	if n == 0 {
+		return 1;
+	}
+	let mut width = 0;
+	let mut temp = n;
+	while temp > 0 {
+		width += 1;
+		temp /= 10;
+	}
+	width
+}
+
+#[derive(Debug, Default)]
+struct InputPrompt {
+	total: AtomicU32,
+	ready: AtomicU32,
+}
+impl Prompt for InputPrompt {
+	fn render_prompt_left(&self) -> Cow<'_, str> {
+		let total = self.total.load(Ordering::Relaxed);
+		let ready = self.ready.load(Ordering::Relaxed);
+		let width = get_decimal_width(total as _);
+		if total != ready {
+			format!("wait ({:>width$}/{:<width$})> ", total - ready, total, width = width).into()
+		} else {
+			format!("ready ({:>width$})> ", total, width = width * 2).into()
+		}
+	}
+
+	fn render_prompt_right(&self) -> Cow<'_, str> {
+		Cow::from("")
+	}
+
+	fn render_prompt_indicator(&self, _prompt_mode: PromptEditMode) -> Cow<'_, str> {
+		Cow::from("")
+	}
+
+	fn render_prompt_multiline_indicator(&self) -> Cow<'_, str> {
+		Cow::from("")
+	}
+
+	fn render_prompt_history_search_indicator(&self, _history_search: PromptHistorySearch) -> Cow<'_, str> {
+		Cow::from("")
+	}
+}
+impl InputPrompt {
+	fn new(total: usize) -> Self {
+		Self { total: AtomicU32::new(total as _), ready: AtomicU32::new(0) }
+	}
+	fn set_ready(&self, ready: u32) {
+		self.ready.store(ready, Ordering::Relaxed);
+	}
+}
 
 /// Session manager coordinates multiple remote connections
 pub struct SessionManager {
-    config: Config,
-    remotes: HashMap<String, RemoteHandle>,
-    event_rx: mpsc::Receiver<RemoteEvent>,
-    event_tx: mpsc::Sender<RemoteEvent>,
-    remote_states: HashMap<String, RemoteState>,
-    exit_code: i32,
+	config: Config,
+	/// Map from display_name to [RemoteHandle]
+	// remotes: HashMap<String, RemoteHandle>,
+	cmd_tx: tokio::sync::broadcast::Sender<RemoteCommand>,
+	// event_rx: mpsc::Receiver<RemoteEvent>,
+	// event_tx: mpsc::Sender<RemoteEvent>,
+	/// Map from display_name to RemoteState
+	remote_states: HashMap<usize, RemoteState>,
+	exit_code: i32,
+	// prompt_tx: Option<mpsc::Sender<Box<str>>>,
+	hosts: Vec<Arc<str>>,
+	display_names: Vec<Arc<str>>,
+	max_name_length: usize,
+	// len_width: usize,
 }
 
 impl SessionManager {
-    /// Create a new session manager
-    pub async fn new(config: Config, hosts: Vec<String>) -> Result<Self> {
-        let (event_tx, event_rx) = mpsc::channel(1000);
-        let mut remotes = HashMap::new();
-        let mut remote_states = HashMap::new();
+	/// Create a new session manager
+	pub async fn new(config: Config, hosts: Vec<String>) -> Result<Self> {
+		let remote_states = HashMap::from_iter(hosts.iter().enumerate().map(|(idx, _)| (idx, RemoteState::NotStarted)));
 
-        // Spawn a task for each host
-        for (id, host) in hosts.iter().enumerate() {
-            let (hostname, port) = parse_host_port(&host);
+		let (display_names, max_name_length) = display_names::make_display_names(&hosts);
+		let hosts: Vec<_> = hosts.into_iter().map(|x| Arc::from(x.as_str())).collect();
+		let display_names: Vec<_> = display_names.into_iter().map(|x| Arc::from(x.as_str())).collect();
+		// let len_width = get_decimal_width(hosts.len());
+		let (cmd_tx, _) = tokio::sync::broadcast::channel(100);
 
-            let remote_config = RemoteConfig {
-                hostname: hostname.clone(),
-                port: port.clone(),
-                user: config.user.clone(),
-                ssh_cmd: config.ssh_cmd.clone(),
-                password: config.password.clone(),
-                command: config.command.clone(),
-                interactive: config.interactive,
-                debug: config.debug,
-                disable_color: config.disable_color,
-            };
+		Ok(Self {
+			config,
+			cmd_tx,
+			// event_rx,
+			remote_states,
+			exit_code: 0,
+			hosts,
+			display_names,
+			max_name_length,
+			// len_width,
+		})
+	}
+	pub async fn start_remote(&self) -> Result<mpsc::Receiver<RemoteEvent>> {
+		let config = &self.config;
+		let (event_tx, event_rx) = mpsc::channel(1000);
+		for (id, host) in self.hosts.iter().enumerate() {
+			let (hostname, port) = parse_host_port(host);
 
-            let callbacks = CallbackManager::new();
-            let remote = Remote::new(id, remote_config, callbacks);
+			let remote_config = RemoteConfig {
+				hostname,
+				port,
+				user: config.user.clone(),
+				ssh_cmd: config.ssh_cmd.clone(),
+				password: config.password.clone(),
+				command: config.command.clone(),
+				interactive: config.interactive,
+				disable_color: config.disable_color,
+				shell_type: config.force_shell,
+			};
 
-            let (cmd_tx, cmd_rx) = mpsc::channel(100);
-            let event_tx_clone = event_tx.clone();
+			let display_name = self.display_names[id].clone();
+			let remote = Remote::new(id, remote_config, display_name);
+			let cmd_tx_sub = self.cmd_tx.subscribe();
+			let event_tx_clone = event_tx.clone();
 
-            // Spawn remote task
-            tokio::spawn(async move {
-                let _ = remote.run(cmd_rx, event_tx_clone).await;
-            });
+			// Spawn remote task - use display_name as identifier in events
+			tokio::spawn(async move { remote.start_loop(cmd_tx_sub, event_tx_clone).await });
+		}
+		Ok(event_rx)
+	}
 
-            let handle = RemoteHandle::new(hostname.clone(), cmd_tx);
-            remotes.insert(hostname.clone(), handle);
-            remote_states.insert(hostname.clone(), RemoteState::NotStarted);
-        }
+	/// Run the session in appropriate mode
+	pub async fn run(&mut self) -> Result<i32> {
+		if self.config.interactive {
+			self.run_interactive().await?;
+		} else {
+			self.run_batch().await?;
+		}
+		Ok(self.exit_code)
+	}
 
-        Ok(Self {
-            config,
-            remotes,
-            event_rx,
-            event_tx,
-            remote_states,
-            exit_code: 0,
-        })
-    }
+	/// Run in interactive mode
+	async fn run_interactive(&mut self) -> Result<()> {
+		let (stdin_tx, mut stdin_rx) = mpsc::channel::<Option<String>>(1);
+		let waiting_input = Arc::new(AtomicBool::new(true));
+		let input_send_wait = waiting_input.clone();
 
-    /// Run the session in appropriate mode
-    pub async fn run(&mut self) -> Result<i32> {
-        if self.config.interactive {
-            self.run_interactive().await?;
-        } else {
-            self.run_batch().await?;
-        }
-        Ok(self.exit_code)
-    }
+		let prompt = Arc::new(InputPrompt::new(self.remote_states.len() as _));
+		let prompt_send = prompt.clone();
+		let ext_printer = reedline::ExternalPrinter::<String>::new(128);
+		let input_printer = ext_printer.clone();
+		let event_printer = ext_printer.clone();
 
-    /// Run in interactive mode
-    async fn run_interactive(&mut self) -> Result<()> {
-        // Channel for readline results
-        let (stdin_tx, mut stdin_rx) = mpsc::channel::<Option<String>>(1);
-        let mut pending_readline: Option<tokio::task::JoinHandle<()>> = None;
-        let mut need_input = true; // Start by requesting input
+		let mut event_rx = self.start_remote().await?;
 
-        loop {
-            // Request input if needed and not already waiting
-            // With proper prompt detection, we can trust the state transitions
-            if need_input && pending_readline.is_none() && self.all_idle_or_terminated() {
-                // Simple drain of any pending events before starting readline
-                loop {
-                    match self.event_rx.try_recv() {
-                        Ok(event) => {
-                            let is_state_change = matches!(
-                                event,
-                                RemoteEvent::StateChanged { .. } | RemoteEvent::Closed { .. }
-                            );
-                            self.handle_event(event).await;
-                            if is_state_change && !self.all_idle_or_terminated() {
-                                need_input = false;
-                            }
-                        }
-                        Err(_) => break, // No more events
-                    }
-                }
+		// Spawn persistent stdin thread with editor instance
+		let _stdin_handle = std::thread::Builder::new().name("input".into()).spawn(move || {
+			let completer = Box::new(reedline::DefaultCompleter::new(vec![]));
 
-                // Only start readline if still ready after draining
-                if need_input && self.all_idle_or_terminated() {
-                    let prompt = self.get_prompt_string();
-                    let tx = stdin_tx.clone();
-                    let handle = tokio::task::spawn_blocking(move || {
-                        let mut editor = match DefaultEditor::new() {
-                            Ok(e) => e,
-                            Err(_) => {
-                                let _ = tx.blocking_send(None);
-                                return;
-                            }
-                        };
+			let mut line_editor = Reedline::create().with_external_printer(input_printer).with_completer(completer);
+			let history = if let Ok(home) = env::var("HOME") {
+				FileBackedHistory::with_file(1000, PathBuf::from(home).join(".rolysh_history"))
+					.expect("cannot set history file")
+			} else {
+				FileBackedHistory::new(1000).unwrap()
+			};
 
-                        match editor.readline(&prompt) {
-                            Ok(line) => {
-                                let _ = editor.add_history_entry(&line);
-                                let _ = tx.blocking_send(Some(line));
-                            }
-                            Err(ReadlineError::Eof) => {
-                                let _ = tx.blocking_send(Some("\x04".to_string()));
-                            }
-                            Err(ReadlineError::Interrupted) => {
-                                let _ = tx.blocking_send(None);
-                            }
-                            Err(_) => {
-                                let _ = tx.blocking_send(None);
-                            }
-                        }
-                    });
-                    pending_readline = Some(handle);
-                    need_input = false;
-                }
-            }
+			line_editor = line_editor.with_history(Box::new(history));
 
-            select! {
-                // Handle stdin
-                Some(line_opt) = stdin_rx.recv() => {
-                    pending_readline = None;
+			let prompt_tx = prompt_send.as_ref();
 
-                    // Handle the line if it exists
-                    if let Some(line) = line_opt {
-                        let line = line.trim();
+			loop {
+				let sig = line_editor.read_line(prompt_tx);
+				{
+					match sig {
+						Ok(s) => match s {
+							Signal::Success(line) => {
+								stdin_tx.blocking_send(Some(line)).unwrap();
+							}
+							Signal::CtrlC => {
+								stdin_tx.blocking_send(Some("\x03".to_string())).unwrap();
+							}
+							Signal::CtrlD => {
+								stdin_tx.blocking_send(Some("\x04".to_string())).unwrap();
+							}
+						},
+						Err(e) => {
+							error!("Error reading line: {}", e);
+						}
+					}
+				}
+				if !input_send_wait.load(Ordering::Relaxed) {
+					//exit input waiting
+					break;
+				}
+			}
+		});
 
-                        // Check for Ctrl+D (EOF marker)
-                        if line == "\x04" {
-                            // Forward Ctrl+D to all enabled remotes
-                            for (hostname, handle) in &self.remotes {
-                                if let Some(&state) = self.remote_states.get(hostname) {
-                                    if state == RemoteState::Idle {
-                                        let _ = handle.send(vec![0x04]).await;
-                                    }
-                                }
-                            }
-                            need_input = true;
-                            continue;
-                        }
+		let prompt_rx = prompt.clone();
 
-                        if line.is_empty() {
-                            need_input = true;
-                            continue;
-                        }
+		let (event_fwd_tx, mut event_fwd_rx) = mpsc::channel(self.hosts.len() * 2);
 
-                        if line.starts_with(':') {
-                            self.handle_control_command(&line[1..]).await?;
-                            need_input = true;
-                        } else if line.starts_with('!') {
-                            let _ = tokio::process::Command::new("sh")
-                                .arg("-c")
-                                .arg(&line[1..])
-                                .status()
-                                .await;
-                            need_input = true;
-                        } else {
-                            // Remote command - will request input when all become idle
-                            self.send_to_all_enabled(line).await?;
-                        }
-                    } else {
-                        // Interrupted
-                        need_input = true;
-                    }
-                }
+		let max_name_length = self.max_name_length;
 
-                // Handle remote events
-                Some(event) = self.event_rx.recv() => {
-                    // Check if we should request input after this event
-                    let is_state_change = matches!(event, RemoteEvent::StateChanged { .. } | RemoteEvent::Closed { .. });
+		let _output_task = tokio::spawn(async move {
+			let mut events_cache = Vec::with_capacity(16);
 
-                    self.handle_event(event).await;
+			while let event_num = event_rx.recv_many(&mut events_cache, 16).await
+				&& event_num != 0
+			{
+				for event in events_cache.drain(..) {
+					match event {
+						RemoteEvent::Output { display_name: hostid, data, color } => {
+							print_remote_output(&hostid, max_name_length, &data, color, Some(&ext_printer))
+						}
+						e => {
+							let _ = event_fwd_tx.send(e).await;
+						}
+					}
+				}
+			}
+		});
 
-                    // Request input when all remotes become idle (only on state changes)
-                    // Remote tasks now drain their PTYs before sending StateChanged,
-                    // so we can trust that all output has been sent
-                    if is_state_change && self.all_idle_or_terminated() {
-                        // Still do a quick drain of any buffered events in the channel
-                        while let Ok(event) = self.event_rx.try_recv() {
-                            self.handle_event(event).await;
-                        }
-                        need_input = true;
-                    }
-                }
+		loop {
+			select! {
 
-                else => break,
-            }
+				// Handle stdin
+				Some(line_opt) = stdin_rx.recv() => {
+					// Handle the line if it exists
+					if let Some(mut line) = line_opt {
+						if line.is_empty() {
+							continue;
+						}
+						if matches!(line.as_bytes()[0], b'\x03'| b'\x04') {
+							let _ = self.cmd_tx.send(RemoteCommand::Send(line.into_bytes()));
+							continue;
+						}
 
-            // Check if all remotes are terminated
-            if self.all_terminated() {
-                break;
-            }
-        }
+						if let Some(cmd) = line.strip_prefix(':') {
+							self.handle_control_command(cmd, &event_printer).await?;
+						} else if let Some(cmd) = line.strip_prefix('!') {
+							let _ = tokio::process::Command::new("sh")
+								.arg("-c")
+								.arg(cmd)
+								.status()
+								.await;
+						} else {
+							line.push('\n');
+							self.send_to_all_enabled(line).await?;
+						}
+					} else {
+						// Interrupted
 
-        Ok(())
-    }
+					}
+				},
 
-    /// Run in batch mode
-    async fn run_batch(&mut self) -> Result<()> {
-        // Wait for all remotes to complete
-        loop {
-            if let Some(event) = self.event_rx.recv().await {
-                self.handle_event(event).await;
+				// Handle remote events
+				Some(event) = event_fwd_rx.recv() => {
+					self.handle_event(event, Some(&event_printer)).await;
 
-                if self.all_terminated() {
-                    break;
-                }
-            } else {
-                break;
-            }
-        }
+					prompt_rx.set_ready(self.ready_num() as _);
+					while let Ok(event) = event_fwd_rx.try_recv() {
+						self.handle_event(event, Some(&event_printer)).await;
+					}
+				},
 
-        Ok(())
-    }
+				else => break,
+			}
 
-    /// Handle a remote event
-    async fn handle_event(&mut self, event: RemoteEvent) {
-        match event {
-            RemoteEvent::Connected { hostname } => {
-                if self.config.debug {
-                    eprintln!("[{hostname}] Connected");
-                }
-            }
-            RemoteEvent::StateChanged { hostname, state } => {
-                self.remote_states.insert(hostname.clone(), state);
-                if self.config.debug {
-                    eprintln!("[{}] State: {}", hostname, state.as_str());
-                }
-            }
-            RemoteEvent::Output { hostname, data } => {
-                self.print_remote_output(&hostname, &data);
-            }
-            RemoteEvent::Closed {
-                hostname,
-                exit_code,
-            } => {
-                self.remote_states
-                    .insert(hostname.clone(), RemoteState::Terminated);
-                if exit_code != 0 {
-                    self.exit_code = self.exit_code.max(exit_code);
-                    if self.config.interactive {
-                        eprintln!("[{hostname}] Exited with code {exit_code}");
-                    }
-                }
-            }
-            RemoteEvent::Error { hostname, error } => {
-                eprintln!("[{hostname}] Error: {error}");
-            }
-        }
-    }
+			// Check if all remotes are terminated
+			if self.all_terminated() {
+				break;
+			}
+		}
+		waiting_input.store(false, Ordering::SeqCst);
+		let _ = _stdin_handle?.join();
+		Ok(())
+	}
 
-    /// Send command to all enabled remotes
-    async fn send_to_all_enabled(&mut self, command: &str) -> Result<()> {
-        for (hostname, handle) in &self.remotes {
-            if let Some(&state) = self.remote_states.get(hostname) {
-                if state == RemoteState::Idle {
-                    handle.execute(command.to_string()).await?;
-                }
-            }
-        }
-        Ok(())
-    }
+	/// Run in batch mode
+	async fn run_batch(&mut self) -> Result<()> {
+		// Wait for all remotes to complete
+		let mut event_rx = self.start_remote().await?;
+		while let Some(event) = event_rx.recv().await {
+			self.handle_event(event, None).await;
 
-    /// Handle control commands (:list, :quit, etc.)
-    async fn handle_control_command(&mut self, cmd: &str) -> Result<()> {
-        let parts: Vec<&str> = cmd.split_whitespace().collect();
-        if parts.is_empty() {
-            return Ok(());
-        }
+			if self.all_terminated() {
+				break;
+			}
+		}
 
-        match parts[0] {
-            "list" | "l" => {
-                println!("Remotes:");
-                for hostname in self.remotes.keys() {
-                    let state = self
-                        .remote_states
-                        .get(hostname)
-                        .unwrap_or(&RemoteState::NotStarted);
-                    println!("  {} - {}", hostname, state.as_str());
-                }
-            }
-            "quit" | "q" | "exit" => {
-                // Close all remotes
-                for handle in self.remotes.values() {
-                    let _ = handle.close().await;
-                }
-                std::process::exit(self.exit_code);
-            }
-            "enable" | "e" => {
-                if parts.len() > 1 {
-                    for hostname in &parts[1..] {
-                        if let Some(handle) = self.remotes.get(*hostname) {
-                            let _ = handle.set_enabled(true).await;
-                            println!("Enabled {hostname}");
-                        }
-                    }
-                } else {
-                    // Enable all
-                    for handle in self.remotes.values() {
-                        let _ = handle.set_enabled(true).await;
-                    }
-                    println!("Enabled all");
-                }
-            }
-            "disable" | "d" => {
-                if parts.len() > 1 {
-                    for hostname in &parts[1..] {
-                        if let Some(handle) = self.remotes.get(*hostname) {
-                            let _ = handle.set_enabled(false).await;
-                            println!("Disabled {hostname}");
-                        }
-                    }
-                } else {
-                    // Disable all
-                    for handle in self.remotes.values() {
-                        let _ = handle.set_enabled(false).await;
-                    }
-                    println!("Disabled all");
-                }
-            }
-            "help" | "h" => {
-                println!("Control commands:");
-                println!("  :list, :l          - List all remotes and their states");
-                println!("  :quit, :q, :exit   - Quit the session");
-                println!("  :enable [hosts...] - Enable remotes (all if no args)");
-                println!("  :disable [hosts...] - Disable remotes (all if no args)");
-                println!("  :help, :h          - Show this help");
-            }
-            _ => {
-                println!("Unknown command: {}", parts[0]);
-                println!("Type :help for available commands");
-            }
-        }
+		Ok(())
+	}
 
-        Ok(())
-    }
+	/// Handle a remote event
+	async fn handle_event(&mut self, event: RemoteEvent, printer: Option<&reedline::ExternalPrinter<String>>) {
+		match event {
+			RemoteEvent::Connected { hostid } => {
+				debug!("[{hostid}] Connected");
+			}
+			RemoteEvent::StateChanged { hostid, state } => {
+				self.remote_states.insert(hostid, state);
+				debug!("[{}] State: {}", hostid, state);
+			}
+			RemoteEvent::Output { display_name: hostid, data, color } => {
+				print_remote_output(&hostid, self.max_name_length, &data, color, printer);
+			}
+			RemoteEvent::Closed { hostid, exit_code } => {
+				self.remote_states.insert(hostid, RemoteState::Terminated);
+				if exit_code != 0 {
+					self.exit_code = self.exit_code.max(exit_code);
+					if self.config.interactive {
+						print_remote_output(
+							&self.display_names[hostid],
+							self.max_name_length,
+							format!("Exited with code {exit_code}").as_bytes(),
+							0,
+							printer,
+						);
+					}
+				}
+			}
+			RemoteEvent::Error { hostid, error } => {
+				error!("[{hostid}] Error: {error}");
+			}
+		}
+	}
 
-    /// Print remote output with hostname prefix
-    fn print_remote_output(&self, hostname: &str, data: &[u8]) {
-        // Format output with color if enabled
-        let prefix = if !self.config.disable_color && io::stdout().is_terminal() {
-            // Simple color cycling (could be improved)
-            format!("\x1b[1;32m[{hostname}]\x1b[0m ")
-        } else {
-            format!("[{hostname}] ")
-        };
+	/// Send command to all enabled remotes
+	async fn send_to_all_enabled(&mut self, command: String) -> Result<()> {
+		debug!("send command to all: {:?}", command);
+		match self.cmd_tx.send(RemoteCommand::Send(command.into_bytes())) {
+			Ok(_) => {}
+			Err(e) => {
+				error!("send command to all failed: {}", e);
+			}
+		}
+		Ok(())
+	}
 
-        // Process output similar to polysh:
-        // 1. Strip trailing newlines
-        // 2. Replace all \n with \n + prefix
-        let output = String::from_utf8_lossy(data);
-        let trimmed = output.trim_end_matches('\n');
+	/// Handle control commands (:list, :quit, etc.)
+	async fn handle_control_command(&mut self, cmd: &str, printer: &reedline::ExternalPrinter<String>) -> Result<()> {
+		let parts: Vec<&str> = cmd.split_whitespace().collect();
+		if parts.is_empty() {
+			return Ok(());
+		}
 
-        if trimmed.is_empty() {
-            return;
-        }
+		match parts[0] {
+			"list" | "l" => {
+				let _ = printer.print("Remotes:".to_string());
+				for hostid in 0..self.display_names.len() {
+					let state = self.remote_states.get(&hostid).unwrap_or(&RemoteState::NotStarted);
+					let _ = printer.print(format!("  {} - {}", self.display_names[hostid], state.as_str()));
+				}
+			}
+			"quit" | "q" | "exit" => {
+				// Close all remotes
+				let _ = self.cmd_tx.send(RemoteCommand::Close(-1));
+			}
+			"enable" | "e" => {
+				if parts.len() > 1 {
+					for &display_name in &parts[1..] {
+						if let Some(handle) = self.hosts.iter().position(|x| display_name.eq(x.as_str())) {
+							let _ = self.cmd_tx.send(RemoteCommand::SetEnabled(handle as _, true));
+							let _ = printer.print(format!("Enabled {display_name}"));
+						}
+					}
+				} else {
+					// Enable all
+					let _ = self.cmd_tx.send(RemoteCommand::SetEnabled(-1, true));
+					let _ = printer.print("Enabled all".to_string());
+				}
+			}
+			"disable" | "d" => {
+				if parts.len() > 1 {
+					for &display_name in &parts[1..] {
+						if let Some(hostid) = self.hosts.iter().position(|x| x.as_str() == display_name) {
+							let _ = self.cmd_tx.send(RemoteCommand::SetEnabled(hostid as _, false));
+							let _ = printer.print(format!("Disabled {display_name}"));
+						}
+					}
+				} else {
+					// Disable all
+					let _ = self.cmd_tx.send(RemoteCommand::SetEnabled(-1, false));
+					let _ = printer.print("Disabled all".to_string());
+				}
+			}
+			"help" | "h" => {
+				let _ = printer.print("Control commands:".to_string());
+				let _ = printer.print("  :list, :l          - List all remotes and their states".to_string());
+				let _ = printer.print("  :quit, :q, :exit   - Quit the session".to_string());
+				let _ = printer.print("  :enable [hosts...] - Enable remotes (all if no args)".to_string());
+				let _ = printer.print("  :disable [hosts...] - Disable remotes (all if no args)".to_string());
+				let _ = printer.print("  :help, :h          - Show this help".to_string());
+			}
+			_ => {
+				let _ = printer.print(format!("Unknown command: {}", parts[0]));
+				let _ = printer.print("Type :help for available commands".to_string());
+			}
+		}
 
-        // Replace newlines with newline + prefix
-        let prefixed = trimmed.replace('\n', &format!("\n{prefix}"));
+		Ok(())
+	}
 
-        // Print the output (rustyline handles prompt redrawing in its own thread)
-        println!("{prefix}{prefixed}");
-    }
+	fn ready_num(&self) -> usize {
+		self.remote_states.values().filter(|&&s| s == RemoteState::Idle).count()
+	}
 
-    /// Get the prompt string based on current state
-    fn get_prompt_string(&self) -> String {
-        // Count non-idle and non-terminated connections (awaited)
-        // Following polysh logic: any state that is not IDLE is "awaited"
-        let waiting = self
-            .remote_states
-            .values()
-            .filter(|&&s| s != RemoteState::Idle && s != RemoteState::Terminated)
-            .count();
-
-        // Total is the number of non-terminated connections
-        let total = self
-            .remote_states
-            .values()
-            .filter(|&&s| s != RemoteState::Terminated)
-            .count();
-
-        if waiting > 0 {
-            format!("waiting ({waiting}/{total})> ")
-        } else {
-            format!("ready ({total})> ")
-        }
-    }
-
-    /// Check if all remotes are terminated
-    fn all_terminated(&self) -> bool {
-        self.remote_states
-            .values()
-            .all(|&s| s == RemoteState::Terminated)
-    }
-
-    /// Check if all remotes are idle or terminated (no commands running)
-    fn all_idle_or_terminated(&self) -> bool {
-        self.remote_states
-            .values()
-            .all(|&s| s == RemoteState::Idle || s == RemoteState::Terminated)
-    }
+	/// Check if all remotes are terminated
+	fn all_terminated(&self) -> bool {
+		self.remote_states.values().all(|&s| s == RemoteState::Terminated)
+	}
 }
 
 /// Parse host:port format
 fn parse_host_port(host: &str) -> (String, String) {
-    if let Some(colon_idx) = host.rfind(':') {
-        let (hostname, port_str) = host.split_at(colon_idx);
-        (hostname.to_string(), port_str[1..].to_string())
-    } else {
-        (host.to_string(), "22".to_string())
-    }
+	let dem_num:usize = host.chars().map(|c| if c == ':' {1}else {0}).sum();
+	if dem_num > 1 {
+		if let Some(colon_idx) = host.rfind("]") {
+			let (hostname, port_str) = host.split_at(colon_idx);
+			(hostname[1..].to_string(), port_str[2..].to_string())
+		}else {
+			(host.to_string(), "22".to_string())
+		}
+	} else if let Some(colon_idx) = host.rfind(':') {
+		let (hostname, port_str) = host.split_at(colon_idx);
+		(hostname.to_string(), port_str[1..].to_string())
+	} else {
+		(host.to_string(), "22".to_string())
+	}
+}
+
+/// Print remote output with display name prefix
+fn print_remote_output(
+	display_name: &str,
+	prefix_len: usize,
+	data: &[u8],
+	color: u8,
+	printer: Option<&reedline::ExternalPrinter<String>>,
+) {
+	let mut line = String::with_capacity(prefix_len + 32 + data.len());
+	if color != 0 {
+		let _ = line.write_fmt(format_args!(
+			"\x1b[1;{color}m{:<width$}\x1b[1;m : \x1b[0m",
+			display_name,
+			width = prefix_len
+		));
+	} else {
+		let _ = line.write_fmt(format_args!("{:<width$} : ", display_name, width = prefix_len));
+	}
+
+	let output = ByteStr::new(data);
+	let _ = line.write_fmt(format_args!("{output}"));
+
+	if let Some(printer) = printer {
+		let _ = printer.print(line);
+	} else {
+		print!("\r\r{line}");
+	}
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+	use super::*;
 
-    #[test]
-    fn test_parse_host_port() {
-        assert_eq!(
-            parse_host_port("example.com"),
-            ("example.com".to_string(), "22".to_string())
-        );
-        assert_eq!(
-            parse_host_port("example.com:2222"),
-            ("example.com".to_string(), "2222".to_string())
-        );
-    }
+	#[test]
+	fn test_parse_host_port() {
+		assert_eq!(parse_host_port("example.com"), ("example.com".to_string(), "22".to_string()));
+		assert_eq!(parse_host_port("192.168.1.1"), ("192.168.1.1".to_string(), "22".to_string()));
+		assert_eq!(parse_host_port("fe80::1"), ("fe80::1".to_string(), "22".to_string()));
+		assert_eq!(parse_host_port("fe80::1%eth0"), ("fe80::1%eth0".to_string(), "22".to_string()));
+		assert_eq!(parse_host_port("[fe80::1]:23"), ("fe80::1".to_string(), "23".to_string()));
+		assert_eq!(parse_host_port("example.com:2222"), ("example.com".to_string(), "2222".to_string()));
+	}
 }
