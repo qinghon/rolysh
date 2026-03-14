@@ -29,7 +29,7 @@ jobs:
   build-linux:
     name: Build Linux (${{ matrix.target }})
     runs-on: ubuntu-latest
-    container: rust:nightly
+    container: rustlang/rust:nightly-bullseye
     needs: create-release
     strategy:
       matrix:
@@ -60,7 +60,7 @@ jobs:
 
       - name: Setup Rust target
         run: |
-          # Add target (Rust is already installed in rust:nightly image)
+          # Add target (Rust is already installed in rustlang/rust:nightly-bullseye image)
           rustup target add ${{ matrix.target }}
           # Show versions
           rustc --version
