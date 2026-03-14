@@ -47,29 +47,20 @@ jobs:
         shell: bash
         run: |
           apt-get update
-          # Install target-specific tools
           if [[ "${{ matrix.target }}" == *"musl"* ]]; then
-            echo "Installing musl tools for ${{ matrix.target }}"
             apt-get install -y musl-tools
-            # Try to install architecture-specific musl dev packages
             if [[ "${{ matrix.target }}" == "aarch64-unknown-linux-musl" ]]; then
-              echo "Installing aarch64 musl development libraries"
-              # Try to install musl cross-compiler
               apt-get install -y gcc-aarch64-linux-gnu || true
-              # Search for musl cross-compilation packages
               apt-get install -y musl-tools-arm64 musl-dev-arm64 || true
-
             elif [[ "${{ matrix.target }}" == "x86_64-unknown-linux-musl" ]]; then
-              echo "Installing x86_64 musl development libraries"
               apt-get install -y musl-dev musl-tools || true
             fi
           elif [[ "${{ matrix.target }}" == *"aarch64"* && "${{ matrix.target }}" == *"gnu"* ]]; then
-            echo "Installing complete cross-compilation toolchain for aarch64"
             apt-get install -y \
               gcc-aarch64-linux-gnu \
               g++-aarch64-linux-gnu \
               binutils-aarch64-linux-gnu \
-              libc6-dev-arm64-cross \
+              libc6-dev-arm64-cross
           fi
 
       - name: Setup Rust target
