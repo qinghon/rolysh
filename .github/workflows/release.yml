@@ -57,12 +57,8 @@ jobs:
               # Try to install musl cross-compiler
               apt-get install -y gcc-aarch64-linux-gnu || true
               # Search for musl cross-compilation packages
-              apt-get install -y musl-tools-arm64 || true
-              apt-get install -y musl-dev-arm64 || true
-              # Try to find and install any aarch64 musl packages
-              echo "Searching for aarch64 musl packages..."
-              apt-cache search "aarch64.*musl" || true
-              apt-cache search "musl.*aarch64" || true
+              apt-get install -y musl-tools-arm64 musl-dev-arm64 || true
+
             elif [[ "${{ matrix.target }}" == "x86_64-unknown-linux-musl" ]]; then
               echo "Installing x86_64 musl development libraries"
               apt-get install -y musl-dev musl-tools || true
@@ -74,22 +70,11 @@ jobs:
               g++-aarch64-linux-gnu \
               binutils-aarch64-linux-gnu \
               libc6-dev-arm64-cross \
-              libgcc-10-dev-arm64-cross \
-              libstdc++-10-dev-arm64-cross \
-              libssl-dev:arm64 \
-              libssh2-1-dev:arm64
           elif [[ "${{ matrix.target }}" == *"x86_64"* && "${{ matrix.target }}" == *"gnu"* ]]; then
             echo "Native x86_64 target, ensuring gcc is installed"
-            apt-get install -y gcc g++ libssl-dev libssh2-1-dev
+            apt-get install -y gcc g++
           fi
 
-          # Show installed packages for debugging
-          echo "Installed cross-compilation packages:"
-          dpkg -l | grep -E "(gcc-|g++-|binutils-|musl|libc6-dev)" || true
-
-          # Show available musl-related packages
-          echo "Available musl packages:"
-          apt-cache search musl | head -20 || true
 
       - name: Setup Rust target
         run: |
