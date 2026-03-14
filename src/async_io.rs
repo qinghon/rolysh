@@ -22,11 +22,7 @@ impl ReadBuf {
 		let buf_head = if tail < head {
 			self.capacity()
 		} else if head == tail {
-			if self.len == 0 {
-				self.capacity()
-			}else {
-				head
-			}
+			if self.len == 0 { self.capacity() } else { head }
 		} else {
 			tail
 		};
@@ -337,5 +333,4 @@ mod tests {
 		assert_eq!(read_buf.write(b"ab").unwrap(), 2);
 		assert_eq!(read_buf.write(b"c").unwrap(), 0);
 	}
-
 }
