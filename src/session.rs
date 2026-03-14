@@ -373,7 +373,7 @@ impl SessionManager {
 			"enable" | "e" => {
 				if parts.len() > 1 {
 					for &display_name in &parts[1..] {
-						if let Some(handle) = self.hosts.iter().position(|x| display_name.eq(x.as_str())) {
+						if let Some(handle) = self.hosts.iter().position(|x| display_name.eq(x.as_ref())) {
 							let _ = self.cmd_tx.send(RemoteCommand::SetEnabled(handle as _, true));
 							let _ = printer.print(format!("Enabled {display_name}"));
 						}
@@ -387,7 +387,7 @@ impl SessionManager {
 			"disable" | "d" => {
 				if parts.len() > 1 {
 					for &display_name in &parts[1..] {
-						if let Some(hostid) = self.hosts.iter().position(|x| x.as_str() == display_name) {
+						if let Some(hostid) = self.hosts.iter().position(|x| x.as_ref() == display_name) {
 							let _ = self.cmd_tx.send(RemoteCommand::SetEnabled(hostid as _, false));
 							let _ = printer.print(format!("Disabled {display_name}"));
 						}
@@ -427,12 +427,12 @@ impl SessionManager {
 
 /// Parse host:port format
 fn parse_host_port(host: &str) -> (String, String) {
-	let dem_num:usize = host.chars().map(|c| if c == ':' {1}else {0}).sum();
+	let dem_num: usize = host.chars().map(|c| if c == ':' { 1 } else { 0 }).sum();
 	if dem_num > 1 {
 		if let Some(colon_idx) = host.rfind("]") {
 			let (hostname, port_str) = host.split_at(colon_idx);
 			(hostname[1..].to_string(), port_str[2..].to_string())
-		}else {
+		} else {
 			(host.to_string(), "22".to_string())
 		}
 	} else if let Some(colon_idx) = host.rfind(':') {
@@ -478,11 +478,26 @@ mod tests {
 
 	#[test]
 	fn test_parse_host_port() {
-		assert_eq!(parse_host_port("example.com"), ("example.com".to_string(), "22".to_string()));
-		assert_eq!(parse_host_port("192.168.1.1"), ("192.168.1.1".to_string(), "22".to_string()));
+		assert_eq!(
+			parse_host_port("example.com"),
+			("example.com".to_string(), "22".to_string())
+		);
+		assert_eq!(
+			parse_host_port("192.168.1.1"),
+			("192.168.1.1".to_string(), "22".to_string())
+		);
 		assert_eq!(parse_host_port("fe80::1"), ("fe80::1".to_string(), "22".to_string()));
-		assert_eq!(parse_host_port("fe80::1%eth0"), ("fe80::1%eth0".to_string(), "22".to_string()));
-		assert_eq!(parse_host_port("[fe80::1]:23"), ("fe80::1".to_string(), "23".to_string()));
-		assert_eq!(parse_host_port("example.com:2222"), ("example.com".to_string(), "2222".to_string()));
+		assert_eq!(
+			parse_host_port("fe80::1%eth0"),
+			("fe80::1%eth0".to_string(), "22".to_string())
+		);
+		assert_eq!(
+			parse_host_port("[fe80::1]:23"),
+			("fe80::1".to_string(), "23".to_string())
+		);
+		assert_eq!(
+			parse_host_port("example.com:2222"),
+			("example.com".to_string(), "2222".to_string())
+		);
 	}
 }

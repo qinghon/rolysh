@@ -1,7 +1,4 @@
-#![feature(random)]
 #![feature(bstr)]
-#![feature(str_as_str)]
-#![feature(generic_atomic)]
 // Rolysh - Modern Rust architecture for parallel SSH connections
 
 //
