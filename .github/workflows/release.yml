@@ -41,9 +41,9 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@nightly
         with:
-          toolchain: stable
+          toolchain: nightly
 
       - name: Cache dependencies
         uses: actions/cache@v4
@@ -59,16 +59,27 @@ jobs:
         with:
           version: latest
 
-      - name: Configure cross for Debian 11 (GNU targets)
-        if: contains(matrix.target, 'gnu')
+      - name: Configure cross
         run: |
-          # Create Cross.toml to use Debian 11 for GNU targets
+          # Create Cross.toml with appropriate configuration for each target
           if [ "${{ matrix.target }}" = "x86_64-unknown-linux-gnu" ]; then
-            echo '[target.x86_64-unknown-linux-gnu]' > Cross.toml
-            echo 'image = "debian:11"' >> Cross.toml
+            cat > Cross.toml << 'EOF'
+[target.x86_64-unknown-linux-gnu]
+image = "debian:11"
+toolchain = "nightly"
+EOF
           elif [ "${{ matrix.target }}" = "aarch64-unknown-linux-gnu" ]; then
-            echo '[target.aarch64-unknown-linux-gnu]' > Cross.toml
-            echo 'image = "debian:11"' >> Cross.toml
+            cat > Cross.toml << 'EOF'
+[target.aarch64-unknown-linux-gnu]
+image = "debian:11"
+toolchain = "nightly"
+EOF
+          else
+            # For musl targets, use default image with nightly toolchain
+            cat > Cross.toml << EOF
+[target.${{ matrix.target }}]
+toolchain = "nightly"
+EOF
           fi
 
       - name: Build with cross
@@ -134,9 +145,9 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@nightly
         with:
-          toolchain: stable
+          toolchain: nightly
           targets: ${{ matrix.target }}
 
       - name: Cache dependencies
