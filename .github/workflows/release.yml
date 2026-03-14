@@ -29,6 +29,7 @@ jobs:
   build-linux:
     name: Build Linux (${{ matrix.target }})
     runs-on: ubuntu-latest
+    container: rust:nightly
     needs: create-release
     strategy:
       matrix:
@@ -42,10 +43,28 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@nightly
-        with:
-          toolchain: nightly
+      - name: Install system packages
+        run: |
+          apt-get update
+          # Install target-specific tools
+          if [[ "${{ matrix.target }}" == *"musl"* ]]; then
+            echo "Installing musl tools for ${{ matrix.target }}"
+            apt-get install -y musl-tools
+          elif [[ "${{ matrix.target }}" == *"aarch64"* && "${{ matrix.target }}" == *"gnu"* ]]; then
+            echo "Installing cross-compilation tools for aarch64"
+            apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+          elif [[ "${{ matrix.target }}" == *"x86_64"* && "${{ matrix.target }}" == *"gnu"* ]]; then
+            echo "Native x86_64 target, ensuring gcc is installed"
+            apt-get install -y gcc g++
+          fi
+
+      - name: Setup Rust target
+        run: |
+          # Add target (Rust is already installed in rust:nightly image)
+          rustup target add ${{ matrix.target }}
+          # Show versions
+          rustc --version
+          cargo --version
 
       - name: Cache dependencies
         uses: actions/cache@v4
@@ -56,57 +75,17 @@ jobs:
             target
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          if [[ "${{ matrix.target }}" == *"musl"* ]]; then
-            echo "Installing musl tools for ${{ matrix.target }}"
-            sudo apt-get install -y musl-tools
-          elif [[ "${{ matrix.target }}" == *"aarch64"* && "${{ matrix.target }}" == *"gnu"* ]]; then
-            echo "Installing cross-compilation tools for aarch64"
-            sudo apt-get install -y gcc-aarch64-linux-gnu
-          elif [[ "${{ matrix.target }}" == *"x86_64"* && "${{ matrix.target }}" == *"gnu"* ]]; then
-            echo "Installing cross-compilation tools for x86_64"
-            sudo apt-get install -y gcc-x86-64-linux-gnu
-          fi
-
-      - name: Install cross
-        run: |
-          cargo install cross
-
-      - name: Show cross info
-        run: |
-          cross --version
-          cross --help | head -20
-
-      - name: Configure cross
-        run: |
-          # Create Cross.toml with appropriate configuration for each target
-          if [ "${{ matrix.target }}" = "x86_64-unknown-linux-gnu" ]; then
-            echo '[target.x86_64-unknown-linux-gnu]' > Cross.toml
-            echo 'image = "debian:11"' >> Cross.toml
-            echo 'toolchain = "nightly"' >> Cross.toml
-          elif [ "${{ matrix.target }}" = "aarch64-unknown-linux-gnu" ]; then
-            echo '[target.aarch64-unknown-linux-gnu]' > Cross.toml
-            echo 'image = "debian:11"' >> Cross.toml
-            echo 'toolchain = "nightly"' >> Cross.toml
-          else
-            # For musl targets, use default image with nightly toolchain
-            echo "[target.${{ matrix.target }}]" > Cross.toml
-            echo 'toolchain = "nightly"' >> Cross.toml
-          fi
-
-      - name: Build with cross
+      - name: Build
         run: |
           echo "Building for target: ${{ matrix.target }}"
-          echo "Cross.toml content:"
-          cat Cross.toml || true
-          cross build --release --target ${{ matrix.target }} --verbose
+          cargo build --release --target ${{ matrix.target }} --verbose
+          echo "Build completed"
 
       - name: Strip binary
         run: |
           BINARY_PATH="target/${{ matrix.target }}/release/rolysh"
           if [ -f "$BINARY_PATH" ] && command -v strip &> /dev/null; then
+            echo "Stripping binary..."
             strip "$BINARY_PATH"
           fi
 
