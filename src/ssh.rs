@@ -270,12 +270,17 @@ impl SshProcess {
 		let mut slave_fd: libc::c_int = 0;
 
 		unsafe {
+			// Use null mut pointers for all platforms
+			// *mut T can be passed where *const T is expected, and macOS specifically requires *mut
+			let termios_ptr = std::ptr::null_mut() as *mut libc::termios;
+			let winsize_ptr = std::ptr::null_mut() as *mut libc::winsize;
+
 			if libc::openpty(
 				&mut master_fd,
 				&mut slave_fd,
 				std::ptr::null_mut(),
-				std::ptr::null(),
-				std::ptr::null(),
+				termios_ptr,
+				winsize_ptr,
 			) != 0
 			{
 				return Err(Error::Connection(format!(
@@ -323,8 +328,17 @@ impl SshProcess {
 			libc::setsid();
 
 			// 设置从设备为控制终端
-			if libc::ioctl(slave_fd, libc::TIOCSCTTY, 0) < 0 {
-				error!("Failed to set control terminal");
+			#[cfg(target_os = "macos")]
+			{
+				if libc::ioctl(slave_fd, libc::TIOCSCTTY as libc::c_ulong, 0) < 0 {
+					error!("Failed to set control terminal");
+				}
+			}
+			#[cfg(not(target_os = "macos"))]
+			{
+				if libc::ioctl(slave_fd, libc::TIOCSCTTY, 0) < 0 {
+					error!("Failed to set control terminal");
+				}
 			}
 			// Redirect stdin/stdout/stderr to slave PTY
 			libc::close(0);
