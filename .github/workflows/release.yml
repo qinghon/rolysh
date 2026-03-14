@@ -116,32 +116,6 @@ jobs:
           fi
           echo "Build completed"
 
-      - name: Strip binary
-        shell: bash
-        run: |
-          BINARY_PATH="target/${{ matrix.target }}/release/rolysh"
-          if [ -f "$BINARY_PATH" ] && command -v strip &> /dev/null; then
-            echo "Stripping binary..."
-            strip "$BINARY_PATH"
-          fi
-
-      - name: Verify binary
-        shell: bash
-        run: |
-          BINARY_PATH="target/${{ matrix.target }}/release/rolysh"
-          if [ -f "$BINARY_PATH" ]; then
-            echo "Binary information:"
-            file "$BINARY_PATH" || true
-            echo ""
-            if [[ "${{ matrix.target }}" == *"musl"* ]]; then
-              echo "Checking if static (musl):"
-              # musl binaries should not depend on glibc
-              ldd "$BINARY_PATH" 2>/dev/null || true
-            else
-              echo "Dynamic binary dependencies:"
-              ldd "$BINARY_PATH" 2>/dev/null || true
-            fi
-          fi
 
       - name: Prepare artifact
         run: |
