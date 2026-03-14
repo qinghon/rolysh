@@ -70,11 +70,7 @@ jobs:
               g++-aarch64-linux-gnu \
               binutils-aarch64-linux-gnu \
               libc6-dev-arm64-cross \
-          elif [[ "${{ matrix.target }}" == *"x86_64"* && "${{ matrix.target }}" == *"gnu"* ]]; then
-            echo "Native x86_64 target, ensuring gcc is installed"
-            apt-get install -y gcc g++
           fi
-
 
       - name: Setup Rust target
         run: |
