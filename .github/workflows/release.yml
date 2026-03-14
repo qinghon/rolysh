@@ -56,10 +56,28 @@ jobs:
             target
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          if [[ "${{ matrix.target }}" == *"musl"* ]]; then
+            echo "Installing musl tools for ${{ matrix.target }}"
+            sudo apt-get install -y musl-tools
+          elif [[ "${{ matrix.target }}" == *"aarch64"* && "${{ matrix.target }}" == *"gnu"* ]]; then
+            echo "Installing cross-compilation tools for aarch64"
+            sudo apt-get install -y gcc-aarch64-linux-gnu
+          elif [[ "${{ matrix.target }}" == *"x86_64"* && "${{ matrix.target }}" == *"gnu"* ]]; then
+            echo "Installing cross-compilation tools for x86_64"
+            sudo apt-get install -y gcc-x86-64-linux-gnu
+          fi
+
       - name: Install cross
-        uses: cross-rs/cross-action@v1
-        with:
-          version: latest
+        run: |
+          cargo install cross
+
+      - name: Show cross info
+        run: |
+          cross --version
+          cross --help | head -20
 
       - name: Configure cross
         run: |
@@ -80,7 +98,10 @@ jobs:
 
       - name: Build with cross
         run: |
-          cross build --release --target ${{ matrix.target }}
+          echo "Building for target: ${{ matrix.target }}"
+          echo "Cross.toml content:"
+          cat Cross.toml || true
+          cross build --release --target ${{ matrix.target }} --verbose
 
       - name: Strip binary
         run: |
@@ -155,9 +176,21 @@ jobs:
             target
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
+      - name: Check installed targets
+        run: |
+          rustup target list --installed
+          echo "Current toolchain:"
+          rustc --version
+          cargo --version
+
       - name: Build
         run: |
-          cargo build --release --target ${{ matrix.target }}
+          echo "Building for target: ${{ matrix.target }}"
+          cargo build --release --target ${{ matrix.target }} --verbose || (
+            echo "Build failed, trying to install target..."
+            rustup target add ${{ matrix.target }}
+            cargo build --release --target ${{ matrix.target }} --verbose
+          )
           # Strip debug symbols
           strip target/${{ matrix.target }}/release/rolysh || true
 
