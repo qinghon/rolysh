@@ -373,7 +373,7 @@ impl SessionManager {
 			"enable" | "e" => {
 				if parts.len() > 1 {
 					for &display_name in &parts[1..] {
-						if let Some(handle) = self.hosts.iter().position(|x| display_name.eq(x.as_str())) {
+						if let Some(handle) = self.hosts.iter().position(|x| display_name.eq(x.as_ref())) {
 							let _ = self.cmd_tx.send(RemoteCommand::SetEnabled(handle as _, true));
 							let _ = printer.print(format!("Enabled {display_name}"));
 						}
@@ -387,7 +387,7 @@ impl SessionManager {
 			"disable" | "d" => {
 				if parts.len() > 1 {
 					for &display_name in &parts[1..] {
-						if let Some(hostid) = self.hosts.iter().position(|x| x.as_str() == display_name) {
+						if let Some(hostid) = self.hosts.iter().position(|x| x.as_ref() == display_name) {
 							let _ = self.cmd_tx.send(RemoteCommand::SetEnabled(hostid as _, false));
 							let _ = printer.print(format!("Disabled {display_name}"));
 						}
