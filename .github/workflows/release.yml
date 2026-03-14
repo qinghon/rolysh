@@ -9,6 +9,8 @@ jobs:
   create-release:
     name: Create Release
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     outputs:
       upload_url: ${{ steps.create_release.outputs.upload_url }}
 
@@ -189,6 +191,8 @@ jobs:
   publish:
     name: Publish Release
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     needs: [create-release, build-linux, build-macos]
 
     steps:
