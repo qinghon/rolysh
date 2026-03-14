@@ -63,23 +63,17 @@ jobs:
         run: |
           # Create Cross.toml with appropriate configuration for each target
           if [ "${{ matrix.target }}" = "x86_64-unknown-linux-gnu" ]; then
-            cat > Cross.toml << 'EOF'
-[target.x86_64-unknown-linux-gnu]
-image = "debian:11"
-toolchain = "nightly"
-EOF
+            echo '[target.x86_64-unknown-linux-gnu]' > Cross.toml
+            echo 'image = "debian:11"' >> Cross.toml
+            echo 'toolchain = "nightly"' >> Cross.toml
           elif [ "${{ matrix.target }}" = "aarch64-unknown-linux-gnu" ]; then
-            cat > Cross.toml << 'EOF'
-[target.aarch64-unknown-linux-gnu]
-image = "debian:11"
-toolchain = "nightly"
-EOF
+            echo '[target.aarch64-unknown-linux-gnu]' > Cross.toml
+            echo 'image = "debian:11"' >> Cross.toml
+            echo 'toolchain = "nightly"' >> Cross.toml
           else
             # For musl targets, use default image with nightly toolchain
-            cat > Cross.toml << EOF
-[target.${{ matrix.target }}]
-toolchain = "nightly"
-EOF
+            echo "[target.${{ matrix.target }}]" > Cross.toml
+            echo 'toolchain = "nightly"' >> Cross.toml
           fi
 
       - name: Build with cross
