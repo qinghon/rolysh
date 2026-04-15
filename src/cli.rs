@@ -62,6 +62,14 @@ pub fn parse_args() -> Result<Config> {
 				let password_file = &args[i];
 				config.password = Some(read_password(password_file)?);
 			}
+			"--password" => {
+				i += 1;
+				if i >= args.len() {
+					return Err(Error::InvalidArgs("--password requires an argument".into()));
+				}
+				let password = &args[i];
+				config.password = Some(password.clone());
+			}
 			"--log-file" => {
 				i += 1;
 				if i >= args.len() {
@@ -107,6 +115,7 @@ pub fn parse_args() -> Result<Config> {
 	config.interactive = config.command.is_none() && stdin.is_terminal() && io::stdout().is_terminal();
 
 	if config.host_names.is_empty() {
+		print_help();
 		return Err(Error::InvalidArgs("No hosts specified".into()));
 	}
 
@@ -129,7 +138,7 @@ fn read_password(file_path: &str) -> Result<String> {
 	}
 }
 
-fn print_help() {
+pub(crate) fn print_help() {
 	let def_conf = Config::default();
 	println!(
 		r#"rolysh - Control many SSH sessions at once
@@ -146,6 +155,7 @@ OPTIONS:
     --user USER           Remote user to log in as
     --no-color            Disable colored hostnames
     --password-file FILE  Read password from file (- for stdin)
+    --password 'PASSWD'   set password from cli
     --log-file FILE       Log all I/O to a file
     --abort-errors        Exit on connection errors
     --debug               Enable debug output
