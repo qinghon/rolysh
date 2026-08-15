@@ -14,14 +14,14 @@ pub fn parse_args() -> Result<Config> {
 	while i < args.len() {
 		match args[i].as_str() {
 			"--version" => {
-				println!("rolysh 0.1.0");
+				println!("rolysh {}", env!("CARGO_PKG_VERSION"));
 				std::process::exit(0);
 			}
 			"-h" | "--help" => {
 				print_help();
 				std::process::exit(0);
 			}
-			"--hosts-file" => {
+			"--hosts-file" | "--hosts" => {
 				i += 1;
 				if i >= args.len() {
 					return Err(Error::InvalidArgs("--hosts-file requires an argument".into()));
@@ -30,7 +30,7 @@ pub fn parse_args() -> Result<Config> {
 					.map_err(|e| Error::InvalidArgs(format!("Failed to read hosts file: {e}")))?;
 				config.host_names.extend(hosts);
 			}
-			"--command" => {
+			"--command" | "-c" => {
 				i += 1;
 				if i >= args.len() {
 					return Err(Error::InvalidArgs("--command requires an argument".into()));
@@ -44,7 +44,7 @@ pub fn parse_args() -> Result<Config> {
 				}
 				config.ssh_cmd = args[i].clone();
 			}
-			"--user" => {
+			"--user" | "-u" => {
 				i += 1;
 				if i >= args.len() {
 					return Err(Error::InvalidArgs("--user requires an argument".into()));
@@ -62,7 +62,7 @@ pub fn parse_args() -> Result<Config> {
 				let password_file = &args[i];
 				config.password = Some(read_password(password_file)?);
 			}
-			"--password" => {
+			"--password" | "-p" => {
 				i += 1;
 				if i >= args.len() {
 					return Err(Error::InvalidArgs("--password requires an argument".into()));
@@ -147,26 +147,26 @@ USAGE:
     rolysh [OPTIONS] HOSTS...
 
 OPTIONS:
-    --version              Show version
-    -h, --help            Show this help message
-    --hosts-file FILE     Read hostnames from a file
-    --command CMD         Execute command and exit (non-interactive)
-    --ssh SSH             SSH command to use default: {}
-    --user USER           Remote user to log in as
-    --no-color            Disable colored hostnames
-    --password-file FILE  Read password from file (- for stdin)
-    --password 'PASSWD'   set password from cli
-    --log-file FILE       Log all I/O to a file
-    --abort-errors        Exit on connection errors
-    --debug               Enable debug output
-    --force-shell         Set remote shell type, support bash,zsh,fish,auto
+    --version                      Show version
+    -h, --help                    Show this help message
+    --hosts-file|--hosts FILE     Read hostnames from a file
+    --command|-c CMD              Execute command and exit (non-interactive)
+    --ssh SSH                     SSH command to use default: {}
+    --user|-u USER                Remote user to log in as
+    --no-color                    Disable colored hostnames
+    --password-file FILE          Read password from file (- for stdin)
+    --password|-p 'PASSWD'        set password from cli
+    --log-file FILE               Log all I/O to a file
+    --abort-errors                Exit on connection errors
+    --debug                       Enable debug output
+    --force-shell                 Set remote shell type, support bash,zsh,fish,auto
 
 CONTROL COMMANDS (prefixed with ':'):
-    :add NAMES...         Add remote shells
-    :list [SHELLS...]     List shells and their state
-    :disable [SHELLS...]  Disable shells
-    :enable [SHELLS...]   Enable shells
-    :quit                 Exit rolysh
+    :add NAMES...                 Add remote shells
+    :list [SHELLS...]             List shells and their state
+    :disable [SHELLS...]          Disable shells
+    :enable [SHELLS...]           Enable shells
+    :quit                         Exit rolysh
 
 "#,
 		def_conf.ssh_cmd,

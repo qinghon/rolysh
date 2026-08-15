@@ -465,13 +465,16 @@ impl Remote {
 					state.state(),
 					ByteStr::new(remaining_after_prompt)
 				);
-				let _ = event_tx
-					.send(RemoteEvent::Output {
-						display_name: self.display_name.clone(),
-						data: remaining_after_prompt.to_vec(),
-						color: self.color_code,
-					})
-					.await;
+				// Only send output event if there's actual data after the prompt
+				if !remaining_after_prompt.is_empty() {
+					let _ = event_tx
+						.send(RemoteEvent::Output {
+							display_name: self.display_name.clone(),
+							data: remaining_after_prompt.to_vec(),
+							color: self.color_code,
+						})
+						.await;
+				}
 
 				prompt_found = true;
 
