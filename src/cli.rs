@@ -90,6 +90,13 @@ pub fn parse_args() -> Result<Config> {
 				}
 				config.force_shell = ShellType::from_str(&args[i])?;
 			}
+			"--separator" | "--sep" => {
+				i += 1;
+				if i >= args.len() {
+					return Err(Error::InvalidArgs("--separator requires an argument".into()));
+				}
+				config.separator = args[i].clone();
+			}
 			arg if arg.starts_with("--") => {
 				return Err(Error::InvalidArgs(format!("Unknown option: {arg}")));
 			}
@@ -157,6 +164,7 @@ OPTIONS:
     --password-file FILE          Read password from file (- for stdin)
     --password|-p 'PASSWD'        set password from cli
     --log-file FILE               Log all I/O to a file
+    --separator|--sep SEP         Separator after hostname in output, default: {}
     --abort-errors                Exit on connection errors
     --debug                       Enable debug output
     --force-shell                 Set remote shell type, support bash,zsh,fish,auto
@@ -169,7 +177,7 @@ CONTROL COMMANDS (prefixed with ':'):
     :quit                         Exit rolysh
 
 "#,
-		def_conf.ssh_cmd,
+		def_conf.ssh_cmd, def_conf.separator,
 	);
 }
 

@@ -214,6 +214,7 @@ impl SessionManager {
 		let (event_fwd_tx, mut event_fwd_rx) = mpsc::channel(self.hosts.len() * 2);
 
 		let max_name_length = self.max_name_length;
+		let separator = self.config.separator.clone();
 
 		let _output_task = tokio::spawn(async move {
 			let mut events_cache = Vec::with_capacity(16);
@@ -224,7 +225,7 @@ impl SessionManager {
 				for event in events_cache.drain(..) {
 					match event {
 						RemoteEvent::Output { display_name: hostid, data, color } => {
-							print_remote_output(&hostid, max_name_length, &data, color, Some(&ext_printer))
+							print_remote_output(&hostid, max_name_length, &separator, &data, color, Some(&ext_printer))
 						}
 						e => {
 							let _ = event_fwd_tx.send(e).await;
@@ -316,7 +317,14 @@ impl SessionManager {
 				debug!("[{}] State: {}", hostid, state);
 			}
 			RemoteEvent::Output { display_name: hostid, data, color } => {
-				print_remote_output(&hostid, self.max_name_length, &data, color, printer);
+				print_remote_output(
+					&hostid,
+					self.max_name_length,
+					&self.config.separator,
+					&data,
+					color,
+					printer,
+				);
 			}
 			RemoteEvent::Closed { hostid, exit_code } => {
 				self.remote_states.insert(hostid, RemoteState::Terminated);
@@ -326,6 +334,7 @@ impl SessionManager {
 						print_remote_output(
 							&self.display_names[hostid],
 							self.max_name_length,
+							&self.config.separator,
 							format!("Exited with code {exit_code}").as_bytes(),
 							0,
 							printer,
@@ -447,6 +456,7 @@ fn parse_host_port(host: &str) -> (String, String) {
 fn print_remote_output(
 	display_name: &str,
 	prefix_len: usize,
+	separator: &str,
 	data: &[u8],
 	color: u8,
 	printer: Option<&reedline::ExternalPrinter<String>>,
@@ -454,12 +464,16 @@ fn print_remote_output(
 	let mut line = String::with_capacity(prefix_len + 32 + data.len());
 	if color != 0 {
 		let _ = line.write_fmt(format_args!(
-			"\x1b[1;{color}m{:<width$}\x1b[1;m : \x1b[0m",
+			"\x1b[1;{color}m{:<width$}\x1b[1;m {separator} \x1b[0m",
 			display_name,
 			width = prefix_len
 		));
 	} else {
-		let _ = line.write_fmt(format_args!("{:<width$} : ", display_name, width = prefix_len));
+		let _ = line.write_fmt(format_args!(
+			"{:<width$} {separator} ",
+			display_name,
+			width = prefix_len
+		));
 	}
 
 	let output = ByteStr::new(data);

@@ -62,6 +62,7 @@ rolysh host1,host2
 --command, -c      在远程主机上执行的命令
 --debug, -d        启用调试日志
 --log-file         指定日志文件路径（默认：/tmp/rolysh.log）
+--separator, --sep 自定义输出行主机名后面的分隔符（默认：:）
 --help, -h         显示帮助信息
 ```
 

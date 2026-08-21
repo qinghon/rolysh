@@ -16,6 +16,7 @@ pub struct Config {
 	pub debug: bool,
 	pub interactive: bool,
 	pub force_shell: ShellType,
+	pub separator: String,
 }
 
 impl Default for Config {
@@ -32,6 +33,7 @@ impl Default for Config {
 			debug: false,
 			interactive: false,
 			force_shell: Default::default(),
+			separator: ":".to_string(),
 			// port_override: None,
 		}
 	}

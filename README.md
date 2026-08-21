@@ -62,6 +62,7 @@ rolysh host1,host2
 --command, -c      Command to execute on remote hosts
 --debug, -d        Enable debug logging
 --log-file         Specify log file path (default: /tmp/rolysh.log)
+--separator, --sep Set the separator after the hostname in output (default: :)
 --help, -h         Show help message
 ```
 
